@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deriv Signal Overlay Tool</title>
+    <title>Deriv Signal Tool</title>
     <style>
         * {
             box-sizing: border-box;
@@ -27,7 +27,7 @@
             border: 1px solid #1a291f;
             border-radius: 14px;
             width: 100%;
-            max-width: 280px;
+            max-width: 290px;
             padding: 18px 14px;
             text-align: center;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
@@ -67,11 +67,22 @@
             box-shadow: 0 0 8px currentColor;
         }
 
-        .symbol-name {
+        .symbol-select {
+            width: 100%;
+            background-color: #0b110d;
+            color: #cccccc;
+            border: 1px solid #1a291f;
+            border-radius: 6px;
+            padding: 6px 8px;
             font-size: 0.75rem;
-            color: #888888;
-            margin-bottom: 10px;
-            text-transform: uppercase;
+            margin-bottom: 12px;
+            text-align: center;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .symbol-select:focus {
+            border-color: #00e676;
         }
 
         .digit-circle {
@@ -99,7 +110,7 @@
 
         .action-banner {
             color: #00e676;
-            font-size: 1.1rem;
+            font-size: 1.05rem;
             font-weight: 900;
             letter-spacing: 0.5px;
         }
@@ -115,7 +126,19 @@
             </div>
         </div>
 
-        <div class="symbol-name">Volatility 10 (1s)</div>
+        <!-- Interactive Market Selector -->
+        <select class="symbol-select" id="symbolSelect">
+            <option value="1HZ10V" selected>Volatility 10 (1s) Index</option>
+            <option value="R_10">Volatility 10 Index</option>
+            <option value="1HZ25V">Volatility 25 (1s) Index</option>
+            <option value="R_25">Volatility 25 Index</option>
+            <option value="1HZ50V">Volatility 50 (1s) Index</option>
+            <option value="R_50">Volatility 50 Index</option>
+            <option value="1HZ75V">Volatility 75 (1s) Index</option>
+            <option value="R_75">Volatility 75 Index</option>
+            <option value="1HZ100V">Volatility 100 (1s) Index</option>
+            <option value="R_100">Volatility 100 Index</option>
+        </select>
 
         <div class="digit-circle" id="digitDisplay">-</div>
 
@@ -125,71 +148,102 @@
     </div>
 
     <script>
-        const app_id = 1089; 
-        const symbol = '1HZ10V'; // Volatility 10 (1s) Index
-        const maxHistory = 100; 
+        const app_id = 1089;
+        const maxHistory = 100;
         let tickHistory = [];
+        let ws = null;
+        let currentSubscriptionId = null;
 
         const digitEl = document.getElementById('digitDisplay');
         const confidenceEl = document.getElementById('confidenceDisplay');
         const timerEl = document.getElementById('timerDisplay');
         const statusBadge = document.getElementById('statusBadge');
         const statusText = document.getElementById('statusText');
+        const symbolSelect = document.getElementById('symbolSelect');
 
-        console.log("Connecting to Deriv WebSocket...");
-        const ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${app_id}`);
+        function connectWebSocket() {
+            ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${app_id}`);
 
-        ws.onopen = () => {
-            console.log("WebSocket connected. Subscribing to:", symbol);
-            statusBadge.classList.add('connected');
-            statusText.textContent = 'LIVE';
+            ws.onopen = () => {
+                statusBadge.classList.add('connected');
+                statusText.textContent = 'LIVE';
+                subscribeToSymbol(symbolSelect.value);
+            };
 
-            // Correct Deriv API tick request format
-            ws.send(JSON.stringify({ ticks: symbol }));
-        };
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
 
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            console.log("Deriv Message Received:", data);
-
-            // Catch API errors returned by Deriv
-            if (data.error) {
-                console.error("Deriv API Error:", data.error.message);
-                timerEl.textContent = `ERR: ${data.error.code}`;
-                return;
-            }
-
-            // Process tick data stream
-            if (data.msg_type === 'tick' && data.tick) {
-                const pipSize = data.tick.pip_size ?? 2;
-                const quote = Number(data.tick.quote).toFixed(pipSize);
-                const lastDigit = parseInt(quote.slice(-1));
-
-                tickHistory.push(lastDigit);
-                if (tickHistory.length > maxHistory) {
-                    tickHistory.shift();
+                if (data.error) {
+                    console.error("Deriv API Error:", data.error);
+                    timerEl.textContent = `ERR: ${data.error.code}`;
+                    return;
                 }
 
-                const confidence = calculateConfidence(lastDigit);
+                // Capture subscription ID
+                if (data.subscription) {
+                    currentSubscriptionId = data.subscription.id;
+                }
 
-                digitEl.textContent = lastDigit;
-                confidenceEl.textContent = `Confidence: ${confidence}%`;
-                timerEl.textContent = `ANALYZING (${tickHistory.length}/${maxHistory})`;
+                // Process streaming ticks safely
+                if (data.msg_type === 'tick' && data.tick) {
+                    const pipSize = data.tick.pip_size ?? 2;
+                    const quote = Number(data.tick.quote).toFixed(pipSize);
+                    const lastDigit = parseInt(quote.slice(-1));
+
+                    tickHistory.push(lastDigit);
+                    if (tickHistory.length > maxHistory) {
+                        tickHistory.shift();
+                    }
+
+                    const confidence = calculateConfidence(lastDigit);
+
+                    digitEl.textContent = lastDigit;
+                    confidenceEl.textContent = `Confidence: ${confidence}%`;
+                    timerEl.textContent = `ANALYZING (${tickHistory.length}/${maxHistory})`;
+                }
+            };
+
+            ws.onerror = (err) => {
+                statusBadge.classList.remove('connected');
+                statusText.textContent = 'OFFLINE';
+                timerEl.textContent = 'CONN ERROR';
+            };
+
+            ws.onclose = () => {
+                statusBadge.classList.remove('connected');
+                statusText.textContent = 'CLOSED';
+            };
+        }
+
+        function subscribeToSymbol(symbol) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            // Reset UI
+            tickHistory = [];
+            digitEl.textContent = '-';
+            confidenceEl.textContent = 'Confidence: --%';
+            timerEl.textContent = 'SUBSCRIBING...';
+
+            // Unsubscribe from previous market stream
+            if (currentSubscriptionId) {
+                ws.send(JSON.stringify({ forget: currentSubscriptionId }));
+                currentSubscriptionId = null;
             }
-        };
 
-        ws.onerror = (err) => {
-            console.error("WebSocket Connection Error:", err);
-            statusBadge.classList.remove('connected');
-            statusText.textContent = 'OFFLINE';
-            timerEl.textContent = 'CONN ERROR';
-        };
+            // Send tick subscription request with 'subscribe: 1'
+            ws.send(JSON.stringify({
+                ticks: symbol,
+                subscribe: 1
+            }));
+        }
 
-        ws.onclose = () => {
-            console.warn("WebSocket closed");
-            statusBadge.classList.remove('connected');
-            statusText.textContent = 'CLOSED';
-        };
+        // Change symbol on dropdown select
+        symbolSelect.addEventListener('change', (e) => {
+            subscribeToSymbol(e.target.value);
+        });
+
+        // Start connection
+        connectWebSocket();
 
         function calculateConfidence(currentDigit) {
             if (tickHistory.length < 10) return 50;
