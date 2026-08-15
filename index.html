@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deriv Signal Overlay Tool</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        body {
+            background-color: #0b110d;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 12px;
+        }
+
+        .card-container {
+            background-color: #111a14;
+            border: 1px solid #1a291f;
+            border-radius: 14px;
+            width: 100%;
+            max-width: 280px;
+            padding: 18px 14px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .brand-title {
+            color: #00e676;
+            font-size: 0.95rem;
+            font-weight: 700;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.75rem;
+            color: #ff5252;
+            font-weight: 600;
+        }
+
+        .status-badge.connected {
+            color: #00e676;
+        }
+
+        .pulse-dot {
+            width: 7px;
+            height: 7px;
+            background-color: currentColor;
+            border-radius: 50%;
+            box-shadow: 0 0 8px currentColor;
+        }
+
+        .symbol-name {
+            font-size: 0.75rem;
+            color: #888888;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        .digit-circle {
+            width: 85px;
+            height: 85px;
+            background: radial-gradient(circle, #29b6f6 0%, #0288d1 100%);
+            border-radius: 50%;
+            margin: 10px auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.2rem;
+            font-weight: 800;
+            color: #ffffff;
+            box-shadow: 0 4px 20px rgba(2, 136, 209, 0.4);
+        }
+
+        .confidence-text {
+            color: #ffb300;
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-top: 12px;
+            margin-bottom: 8px;
+        }
+
+        .action-banner {
+            color: #00e676;
+            font-size: 1.1rem;
+            font-weight: 900;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="card-container">
+        <div class="header">
+            <span class="brand-title">Deriv Pro Tool</span>
+            <div class="status-badge" id="statusBadge">
+                <span class="pulse-dot"></span> <span id="statusText">CONNECTING</span>
+            </div>
+        </div>
+
+        <div class="symbol-name">Volatility 10 (1s)</div>
+
+        <div class="digit-circle" id="digitDisplay">-</div>
+
+        <div class="confidence-text" id="confidenceDisplay">Confidence: --%</div>
+
+        <div class="action-banner" id="timerDisplay">WAITING FOR TICKS</div>
+    </div>
+
+    <script>
+        const app_id = 1089; 
+        const symbol = '1HZ10V'; // Volatility 10 (1s) Index
+        const maxHistory = 100; 
+        let tickHistory = [];
+
+        const digitEl = document.getElementById('digitDisplay');
+        const confidenceEl = document.getElementById('confidenceDisplay');
+        const timerEl = document.getElementById('timerDisplay');
+        const statusBadge = document.getElementById('statusBadge');
+        const statusText = document.getElementById('statusText');
+
+        console.log("Connecting to Deriv WebSocket...");
+        const ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${app_id}`);
+
+        ws.onopen = () => {
+            console.log("WebSocket connected. Subscribing to:", symbol);
+            statusBadge.classList.add('connected');
+            statusText.textContent = 'LIVE';
+
+            // Correct Deriv API tick request format
+            ws.send(JSON.stringify({ ticks: symbol }));
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            console.log("Deriv Message Received:", data);
+
+            // Catch API errors returned by Deriv
+            if (data.error) {
+                console.error("Deriv API Error:", data.error.message);
+                timerEl.textContent = `ERR: ${data.error.code}`;
+                return;
+            }
+
+            // Process tick data stream
+            if (data.msg_type === 'tick' && data.tick) {
+                const pipSize = data.tick.pip_size ?? 2;
+                const quote = Number(data.tick.quote).toFixed(pipSize);
+                const lastDigit = parseInt(quote.slice(-1));
+
+                tickHistory.push(lastDigit);
+                if (tickHistory.length > maxHistory) {
+                    tickHistory.shift();
+                }
+
+                const confidence = calculateConfidence(lastDigit);
+
+                digitEl.textContent = lastDigit;
+                confidenceEl.textContent = `Confidence: ${confidence}%`;
+                timerEl.textContent = `ANALYZING (${tickHistory.length}/${maxHistory})`;
+            }
+        };
+
+        ws.onerror = (err) => {
+            console.error("WebSocket Connection Error:", err);
+            statusBadge.classList.remove('connected');
+            statusText.textContent = 'OFFLINE';
+            timerEl.textContent = 'CONN ERROR';
+        };
+
+        ws.onclose = () => {
+            console.warn("WebSocket closed");
+            statusBadge.classList.remove('connected');
+            statusText.textContent = 'CLOSED';
+        };
+
+        function calculateConfidence(currentDigit) {
+            if (tickHistory.length < 10) return 50;
+            const occurrences = tickHistory.filter(d => d === currentDigit).length;
+            const ratio = occurrences / tickHistory.length;
+            return Math.min(Math.round(ratio * 400 + 40), 95);
+        }
+    </script>
+</body>
+</html>
