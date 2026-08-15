@@ -159,7 +159,7 @@
 
         function connectWebSocket() {
             // Establish fresh connection to Deriv
-            ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${app_id}`);
+            ws = new WebSocket('wss://api.derivws.com/trading/v1/options/ws/public');
 
             ws.onopen = () => {
                 statusBadge.classList.add('connected');
